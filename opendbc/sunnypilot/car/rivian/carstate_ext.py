@@ -8,6 +8,8 @@ import math
 from enum import StrEnum
 
 from opendbc.car import Bus, structs
+from openpilot.common.params import Params
+from openpilot.sunnypilot.mads.helpers import MadsSteeringModeOnBrake, read_steering_mode_param
 from opendbc.can.parser import CANParser
 from opendbc.car.common.conversions import Conversions as CV
 from opendbc.car.rivian.values import DBC
@@ -30,12 +32,57 @@ class CarStateExt:
     self.distance_button = 0
     self.increase_counter = 0
     self.decrease_counter = 0
-    self.stalk_down_counter = 0
+    self.vdm_user_adas_request = 0
+    self._lkas_pending = False
+    self.steering_mode_on_brake = read_steering_mode_param(CP, CP_SP, Params())
 
-  def update_longitudinal_upgrade(self, ret: structs.CarState, can_parsers: dict[StrEnum, CANParser]) -> None:
+    self._resume_enabled: bool = Params().get_bool("RivianResumeEnabled")
+    self.last_active_set_speed: float | None = None
+    self._prev_cruise_enabled: bool = False
+    self._resume_eligible: bool = False
+    self._resume_acc_counter: int = 0
+    self._prev_stalk_down2: bool = False
+    self._prev_stalk_down: bool = False
+    self._frames_since_acc_on: int = 0
+
+  def update_stalk_controls(self, ret: structs.CarState, can_parsers: dict[StrEnum, CANParser]) -> list:
+    cp = can_parsers[Bus.pt]
+    vdm = int(cp.vl["VDM_AdasSts"]["VDM_UserAdasRequest"])
+
+    button_events = []
+
+    # Emit the deferred lkas event only if the current frame is not UP_2.
+    # This 1-frame lookahead prevents the CAN transition through UP_1 on the
+    # way to UP_2 from accidentally engaging or changing MADS state.
+    if self._lkas_pending:
+      if vdm != 2:
+        button_events.append(structs.CarState.ButtonEvent(pressed=True, type=ButtonType.lkas))
+      self._lkas_pending = False
+
+    # UP_1 rising edge (from IDLE or DOWN only, not from UP_2 release).
+    # In DISENGAGE mode with ACC active, suppress: UP_1 cancels Rivian ACC natively
+    # and pcmDisable is stripped by mads.update_events(), leaving MADS in Mode B.
+    # Generating lkas here would also fire manualSteeringRequired and kill MADS.
+    if vdm == 1 and self.vdm_user_adas_request not in (1, 2):
+      if not (self.steering_mode_on_brake == MadsSteeringModeOnBrake.DISENGAGE and ret.cruiseState.enabled):
+        self._lkas_pending = True
+
+    # Signal UP_2 state via altButton2 so car_specific.py can fire lkasDisable
+    # and suppress pcmEnable. UP_2 disengages ACC; without this, MADS can persist
+    # in Mode B (lateral only) after ACC cancels.
+    if vdm == 2 and self.vdm_user_adas_request != 2:
+      button_events.append(structs.CarState.ButtonEvent(pressed=True, type=ButtonType.altButton2))
+    elif vdm != 2 and self.vdm_user_adas_request == 2:
+      button_events.append(structs.CarState.ButtonEvent(pressed=False, type=ButtonType.altButton2))
+
+    self.vdm_user_adas_request = vdm
+    return button_events
+
+  def update_longitudinal_upgrade(self, ret: structs.CarState, can_parsers: dict[StrEnum, CANParser]) -> list:
     cp_park = can_parsers[Bus.alt]
     cp_adas = can_parsers[Bus.adas]
     cp = can_parsers[Bus.pt]
+    button_events = []
 
     prev_increase_button = self.increase_button
     prev_decrease_button = self.decrease_button
@@ -45,7 +92,7 @@ class CarStateExt:
       right_scroll = cp_park.vl["WheelButtons_Fwd"]["RightButton_Scroll"]
       if right_scroll != 255:
         if self.distance_button != right_scroll:
-          ret.buttonEvents = [structs.CarState.ButtonEvent(pressed=False, type=ButtonType.gapAdjustCruise)]
+          button_events.append(structs.CarState.ButtonEvent(pressed=False, type=ButtonType.gapAdjustCruise))
         self.distance_button = right_scroll
 
       # button logic for set-speed
@@ -72,15 +119,57 @@ class CarStateExt:
         elif not prev_decrease_button:
           self.set_speed -= conversion
 
+      # VDM_UserAdasRequest: 0=IDLE, 1=UP_1, 2=UP_2, 3=DOWN_1, 4=DOWN_2
+      vdm_request = int(cp.vl["VDM_AdasSts"]["VDM_UserAdasRequest"])
+      stalk_down2 = vdm_request == 4
+      stalk_down = vdm_request in (3, 4)
+
+      # Save set speed on ACC deactivation (before vEgoCluster reset so value is intact)
+      if self._resume_enabled:
+        if self._prev_cruise_enabled and not ret.cruiseState.enabled:
+          self.last_active_set_speed = self.set_speed
+          self._resume_eligible = False
+          self._resume_acc_counter = 0
+
+      # Arm resume only on ACC rising edge while DOWN_2 is held
+      if self._resume_enabled:
+        if not self._prev_cruise_enabled and ret.cruiseState.enabled and stalk_down2:
+          self._resume_eligible = True
+        # Also arm on DOWN_2 rising edge within ~100ms of ACC activation: handles the case
+        # where the stalk transitions through DOWN_1 before reaching DOWN_2 (~40-50ms delay
+        # observed in logs), so ACC activates while the stalk is still in DOWN_1 detent.
+        elif (ret.cruiseState.enabled and not self._prev_stalk_down2 and stalk_down2
+              and not self._resume_eligible and self._frames_since_acc_on < 10):
+          self._resume_eligible = True
+        # Also arm on first DOWN_2 press while ACC is on and speed is below minimum: handles
+        # stop-and-go where ACC has been engaged continuously (frames_since_acc_on > 10) and
+        # the driver presses DOWN_2 to resume to a previously set higher speed.
+        elif (ret.cruiseState.enabled and not self._prev_stalk_down2 and stalk_down2
+              and ret.vEgoCluster < MIN_SET_SPEED and not self._resume_eligible):
+          self._resume_eligible = True
+
       if not ret.cruiseState.enabled:
         self.set_speed = ret.vEgoCluster
 
-      # VDM_UserAdasRequest: 0=IDLE, 1=UP_1, 2=UP_2, 3=DOWN_1, 4=DOWN_2
-      stalk_down = int(cp.vl["VDM_AdasSts"]["VDM_UserAdasRequest"]) in (3, 4)
-      self.stalk_down_counter = self.stalk_down_counter + 1 if stalk_down else 0
-      if self.stalk_down_counter == 50:
-        # Mimic Rivian ACC: holding stalk 0.5s sets speed to current speed (never decreases)
+      if stalk_down and not self._prev_stalk_down and not self._resume_eligible:
+        # Mimic Rivian ACC: tapping stalk down snaps set speed to current speed (never decreases)
         self.set_speed = max(self.set_speed, ret.vEgoCluster)
+
+      self._prev_cruise_enabled = ret.cruiseState.enabled
+      self._prev_stalk_down2 = stalk_down2
+      self._prev_stalk_down = stalk_down
+      self._frames_since_acc_on = (self._frames_since_acc_on + 1) if ret.cruiseState.enabled else 0
+
+      # Resume: count consecutive frames where ACC is on and DOWN_2 is held after arming
+      if self._resume_enabled and self._resume_eligible and ret.cruiseState.enabled and stalk_down2:
+        self._resume_acc_counter += 1
+      else:
+        self._resume_acc_counter = 0
+
+      if self._resume_acc_counter == 50 and self.last_active_set_speed is not None:
+        self.set_speed = self.last_active_set_speed
+        self._resume_eligible = False
+        self._resume_acc_counter = 0
 
       self.set_speed = max(MIN_SET_SPEED, min(self.set_speed, MAX_SET_SPEED))
       ret.cruiseState.speed = self.set_speed
@@ -89,9 +178,16 @@ class CarStateExt:
       ret.leftBlindspot = cp_park.vl["BSM_BlindSpotIndicator_Fwd"]["BSM_BlindSpotIndicator_Left"] != 0
       ret.rightBlindspot = cp_park.vl["BSM_BlindSpotIndicator_Fwd"]["BSM_BlindSpotIndicator_Right"] != 0
 
+    return button_events
+
   def update(self, ret: structs.CarState, can_parsers: dict[StrEnum, CANParser]) -> None:
+    button_events = []
+
     if self.CP_SP.flags & RivianFlagsSP.LONGITUDINAL_HARNESS_UPGRADE:
-      self.update_longitudinal_upgrade(ret, can_parsers)
+      button_events.extend(self.update_longitudinal_upgrade(ret, can_parsers))
+
+    button_events.extend(self.update_stalk_controls(ret, can_parsers))
+    ret.buttonEvents = button_events
 
   @staticmethod
   def get_parser(CP, CP_SP) -> dict[StrEnum, CANParser]:

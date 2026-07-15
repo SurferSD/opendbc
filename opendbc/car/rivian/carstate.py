@@ -37,6 +37,7 @@ class CarState(CarStateBase, CarStateExt):
     ret.gasPressed = cp.vl["VDM_PropStatus"]["VDM_AcceleratorPedalPosition"] > 0
 
     # Brake pedal
+    ret.brake = cp.vl["ESPiB3"]["ESPiB3_pMC1"] / 250.0  # pressure in Bar
     ret.brakePressed = cp.vl["iBESP2"]["iBESP2_BrakePedalApplied"] == 1
 
     # Steering wheel
@@ -45,7 +46,9 @@ class CarState(CarStateBase, CarStateExt):
     ret.steeringTorque = cp.vl["EPAS_SystemStatus"]["EPAS_TorsionBarTorque"]
     ret.steeringPressed = self.update_steering_pressed(abs(ret.steeringTorque) > 1.0, 5)
 
-    ret.steerFaultTemporary = cp.vl["EPAS_AdasStatus"]["EPAS_EacErrorCode"] != 0
+    # EPAS_HandsOnLevel: 1 = normal/hands-on; any other value is a car-reported hands-off fault
+    hands_on_level = cp.vl["EPAS_SystemStatus"]["EPAS_HandsOnLevel"]
+    ret.steerFaultTemporary = cp.vl["EPAS_SystemStatus"]["H_CAN_EPSS_ToiFlt"] != 0 or hands_on_level != 1
 
     # Cruise state
     speed = min(int(cp_adas.vl["ACM_tsrCmd"]["ACM_tsrSpdDisClsMain"]), 85)
