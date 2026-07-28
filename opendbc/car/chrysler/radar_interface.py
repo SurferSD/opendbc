@@ -42,24 +42,18 @@ class RadarInterface(RadarInterfaceBase):
   def __init__(self, CP, CP_SP):
     super().__init__(CP, CP_SP)
     self.rcp = _create_radar_can_parser(CP.carFingerprint)
-    self.updated_messages = set()
+    self.radar_off_can = CP.radarUnavailable
     self.trigger_msg = LAST_MSG
 
   def update(self, can_strings):
-    if self.rcp is None or self.CP.radarUnavailable:
-      return super().update(None)
+    return self.update_trigger(can_strings)
 
-    vls = self.rcp.update(can_strings)
-    self.updated_messages.update(vls)
-
-    if self.trigger_msg not in self.updated_messages:
-      return None
-
+  def _update(self, updated_messages):
     ret = structs.RadarData()
     if not self.rcp.can_valid:
       ret.errors.canError = True
 
-    for ii in self.updated_messages:  # ii should be the message ID as a number
+    for ii in updated_messages:  # ii should be the message ID as a number
       cpt = self.rcp.vl[ii]
       trackId = _address_to_track(ii)
 
@@ -78,5 +72,4 @@ class RadarInterface(RadarInterfaceBase):
     # We want a list, not a dictionary. Filter out LONG_DIST==0 because that means it's not valid.
     ret.points = [x for x in self.pts.values() if x.dRel != 0]
 
-    self.updated_messages.clear()
     return ret

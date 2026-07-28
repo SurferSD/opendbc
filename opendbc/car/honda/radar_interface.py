@@ -24,23 +24,11 @@ class RadarInterface(RadarInterfaceBase):
     else:
       self.rcp = _create_nidec_can_parser(CP.carFingerprint)
     self.trigger_msg = 0x445
-    self.updated_messages = set()
 
   def update(self, can_strings):
     # in Bosch radar and we are only steering for now, so sleep 0.05s to keep
     # radard at 20Hz and return no points
-    if self.radar_off_can:
-      return super().update(None)
-
-    vls = self.rcp.update(can_strings)
-    self.updated_messages.update(vls)
-
-    if self.trigger_msg not in self.updated_messages:
-      return None
-
-    rr = self._update(self.updated_messages)
-    self.updated_messages.clear()
-    return rr
+    return self.update_trigger(can_strings)
 
   def _update(self, updated_messages):
     ret = structs.RadarData()
