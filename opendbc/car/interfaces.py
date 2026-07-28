@@ -423,21 +423,26 @@ def get_interface_attr(attr: str, combine_brands: bool = False, ignore_none: boo
   # - values are attr values from all car folders
   result = {}
   for car_folder in sorted([x[0] for x in os.walk(BASEDIR)]):
+    brand_name = car_folder.split('/')[-1]
+    module_name = f'opendbc.car.{brand_name}.{INTERFACE_ATTR_FILE.get(attr, "values")}'
     try:
-      brand_name = car_folder.split('/')[-1]
-      brand_values = __import__(f'opendbc.car.{brand_name}.{INTERFACE_ATTR_FILE.get(attr, "values")}', fromlist=[attr])
-      if hasattr(brand_values, attr) or not ignore_none:
-        attr_data = getattr(brand_values, attr, None)
-      else:
+      brand_values = __import__(module_name, fromlist=[attr])
+    except ModuleNotFoundError as e:
+      # the directory is not a car brand (or has no values module), any other missing import is a real error
+      if e.name is not None and (e.name == module_name or module_name.startswith(e.name + '.')):
         continue
+      raise
 
-      if combine_brands:
-        if isinstance(attr_data, dict):
-          for f, v in attr_data.items():
-            result[f] = v
-      else:
-        result[brand_name] = attr_data
-    except (ImportError, OSError):
-      pass
+    if hasattr(brand_values, attr) or not ignore_none:
+      attr_data = getattr(brand_values, attr, None)
+    else:
+      continue
+
+    if combine_brands:
+      if isinstance(attr_data, dict):
+        for f, v in attr_data.items():
+          result[f] = v
+    else:
+      result[brand_name] = attr_data
 
   return result

@@ -647,12 +647,12 @@ class UdsClient:
         service_id = resp[1] if len(resp) > 1 else -1
         try:
           service_desc = SERVICE_TYPE(service_id).name
-        except BaseException:
+        except ValueError:
           service_desc = 'NON_STANDARD_SERVICE'
         error_code = resp[2] if len(resp) > 2 else -1
         try:
           error_desc = _negative_response_codes[error_code]
-        except BaseException:
+        except KeyError:
           error_desc = resp[3:].hex()
         # wait for another message if response pending
         if error_code == 0x78:
