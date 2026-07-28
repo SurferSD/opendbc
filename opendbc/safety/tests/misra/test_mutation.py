@@ -62,8 +62,9 @@ class TestMisraMutation(unittest.TestCase):
               f.write(transform(content))
 
           # run test
-          r = subprocess.run(f"OPENDBC_ROOT={tmp} opendbc/safety/tests/misra/test_misra.sh",
-                             stdout=subprocess.PIPE, cwd=ROOT, shell=True, encoding='utf8')
+          r = subprocess.run(["opendbc/safety/tests/misra/test_misra.sh"],
+                             env={**os.environ, "OPENDBC_ROOT": tmp},
+                             stdout=subprocess.PIPE, cwd=ROOT, encoding='utf8')
           print(r.stdout) # helpful for debugging failures
           failed = r.returncode != 0
           assert failed == should_fail

@@ -80,6 +80,8 @@ class DBC:
     if os.path.exists(name):
       self._parse_file(name)
     else:
+      if os.path.sep in name or (os.path.altsep is not None and os.path.altsep in name) or name in (os.pardir, os.curdir):
+        raise FileNotFoundError(f"DBC not found: {name}")
       dbc_path = os.path.join(DBC_PATH, name + ".dbc")
       if content := get_generated_dbcs().get(name):
         self._parse_content(name, content)
