@@ -1,0 +1,6 @@
+interface:
+  display_name: "Opendbc"
+  short_description: "Repo-specific patterns and workflows for opendbc"
+  default_prompt: "Use the opendbc repo skill to follow existing architecture, testing, and workflow conventions."
+policy:
+  allow_implicit_invocation: true
