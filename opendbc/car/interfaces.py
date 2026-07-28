@@ -84,16 +84,39 @@ class RadarInterfaceBase(ABC):
   def __init__(self, CP: structs.CarParams, CP_SP: structs.CarParamsSP):
     self.CP = CP
     self.CP_SP = CP_SP
-    self.rcp = None
+    self.rcp: CANParser | None = None
     self.pts: dict[int, structs.RadarData.RadarPoint] = {}
     self.track_id: int = 0
     self.frame = 0
+
+    # used by the shared trigger-message polling in update_trigger()
+    self.updated_messages: set[int] = set()
+    self.trigger_msg: int = -1
+    self.radar_off_can: bool = False
 
   def update(self, can_packets: list[tuple[int, list[CanData]]]) -> structs.RadarDataT | None:
     self.frame += 1
     if (self.frame % 5) == 0:  # 20 Hz is very standard
       return structs.RadarData()
     return None
+
+  def update_trigger(self, can_strings) -> structs.RadarDataT | None:
+    """Shared radar update: accumulate parsed messages until the trigger message is
+    seen, then delegate the point extraction to the brand-specific _update()."""
+    if self.radar_off_can or self.rcp is None:
+      return RadarInterfaceBase.update(self, None)
+
+    self.updated_messages.update(self.rcp.update(can_strings))
+
+    if self.trigger_msg not in self.updated_messages:
+      return None
+
+    rr = self._update(self.updated_messages)
+    self.updated_messages.clear()
+    return rr
+
+  def _update(self, updated_messages: set[int]) -> structs.RadarDataT:
+    return structs.RadarData()
 
 
 class CarInterfaceBase(ABC, CarInterfaceBaseSP):

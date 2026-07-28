@@ -40,18 +40,11 @@ class RadarInterface(RadarInterfaceBase):
     self.rcp = None if CP.radarUnavailable else create_radar_can_parser(CP.carFingerprint)
 
     self.trigger_msg = LAST_RADAR_MSG
-    self.updated_messages = set()
 
   def update(self, can_strings):
-    if self.rcp is None:
-      return super().update(None)
+    return self.update_trigger(can_strings)
 
-    vls = self.rcp.update(can_strings)
-    self.updated_messages.update(vls)
-
-    if self.trigger_msg not in self.updated_messages:
-      return None
-
+  def _update(self, updated_messages):
     ret = structs.RadarData()
     header = self.rcp.vl[RADAR_HEADER_MSG]
     fault = header['FLRRSnsrBlckd'] or header['FLRRSnstvFltPrsntInt'] or \
@@ -67,7 +60,7 @@ class RadarInterface(RadarInterfaceBase):
 
     # Not all radar messages describe targets,
     # no need to monitor all of the self.rcp.msgs_upd
-    for ii in self.updated_messages:
+    for ii in updated_messages:
       if ii == RADAR_HEADER_MSG:
         continue
 
@@ -77,7 +70,7 @@ class RadarInterface(RadarInterfaceBase):
       cpt = self.rcp.vl[ii]
       # Zero distance means it's an empty target slot
       if cpt['TrkRange'] > 0.0:
-        targetId = cpt['TrkObjectID']
+        targetId = int(cpt['TrkObjectID'])
         currentTargets.add(targetId)
         if targetId not in self.pts:
           self.pts[targetId] = structs.RadarData.RadarPoint()
@@ -93,5 +86,4 @@ class RadarInterface(RadarInterfaceBase):
         del self.pts[oldTarget]
 
     ret.points = list(self.pts.values())
-    self.updated_messages.clear()
     return ret

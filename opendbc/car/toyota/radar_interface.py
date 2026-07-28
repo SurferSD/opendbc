@@ -38,22 +38,9 @@ class RadarInterface(RadarInterfaceBase):
 
     self.rcp = None if CP.radarUnavailable else _create_radar_can_parser(CP.carFingerprint)
     self.trigger_msg = self.RADAR_B_MSGS[-1]
-    self.updated_messages = set()
 
   def update(self, can_strings):
-    if self.rcp is None:
-      return super().update(None)
-
-    vls = self.rcp.update(can_strings)
-    self.updated_messages.update(vls)
-
-    if self.trigger_msg not in self.updated_messages:
-      return None
-
-    rr = self._update(self.updated_messages)
-    self.updated_messages.clear()
-
-    return rr
+    return self.update_trigger(can_strings)
 
   def _update(self, updated_messages):
     ret = RadarData()

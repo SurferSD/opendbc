@@ -17,26 +17,13 @@ def get_radar_can_parser(CP):
 class RadarInterface(RadarInterfaceBase):
   def __init__(self, CP, CP_SP):
     super().__init__(CP, CP_SP)
-    self.updated_messages = set()
     self.trigger_msg = RADAR_START_ADDR + RADAR_MSG_COUNT - 1
 
     self.radar_off_can = CP.radarUnavailable
     self.rcp = get_radar_can_parser(CP)
 
   def update(self, can_strings):
-    if self.radar_off_can or (self.rcp is None):
-      return super().update(None)
-
-    vls = self.rcp.update(can_strings)
-    self.updated_messages.update(vls)
-
-    if self.trigger_msg not in self.updated_messages:
-      return None
-
-    rr = self._update(self.updated_messages)
-    self.updated_messages.clear()
-
-    return rr
+    return self.update_trigger(can_strings)
 
   def _update(self, updated_messages):
     ret = structs.RadarData()
