@@ -54,9 +54,10 @@ class LogReader:
       if self._only_union_types:
         try:
           ent.which()
-          yield ent
         except capnp.lib.capnp.KjException:
-          pass
+          warnings.warn("Skipping event with unknown union type", RuntimeWarning, stacklevel=1)
+          continue
+        yield ent
       else:
         yield ent
 

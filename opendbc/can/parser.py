@@ -158,8 +158,10 @@ class CANParser:
       msg = self.dbc.addr_to_msg.get(int(name_or_addr))
     else:
       msg = self.dbc.name_to_msg.get(name_or_addr)
-    assert msg is not None
-    assert msg.address not in self.addresses
+    if msg is None:
+      raise RuntimeError(f"could not find message {name_or_addr!r} in DBC {self.dbc_name}")
+    if msg.address in self.addresses:
+      raise RuntimeError(f"Duplicate Message Check: {msg.address}")
 
     self.addresses.add(msg.address)
     signal_names = list(msg.sigs.keys())
@@ -231,7 +233,10 @@ class CANParser:
           continue
         bus_empty = False
         state = self.message_states.get(address)
-        if state is None or len(dat) > 64:
+        if state is None:
+          continue
+        if len(dat) > 64:
+          state.rate_limited_log(t, f"dropping oversized frame: {len(dat)} bytes")
           continue
         if state.parse(t, dat):
           updated_addrs.add(address)
